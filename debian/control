@@ -1,0 +1,14 @@
+Source: podman
+Section: utils
+Priority: optional
+Maintainer: Your Name <your.email@example.com>
+Build-Depends: debhelper (>= 11), golang-go, libglib2.0-dev, libseccomp-dev, libselinux1-dev, systemd, git
+Standards-Version: 4.5.0
+Homepage: https://podman.io/
+
+Package: podman
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, conmon (>= 2.1.7-2), containers-common, catatonit
+Description: Podman is a fully featured container engine that is a simple daemonless tool.
+ Podman provides a Docker-CLI comparable command line that eases the transition from other
+ container engines and allows the management of pods, containers, and images.
