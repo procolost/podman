@@ -1,28 +1,48 @@
 #!/usr/bin/env bash
 
-# This script handles any custom processing of the spec file generated using the `post-upstream-clone`
-# action and gets used by the fix-spec-file action in .packit.yaml.
+# This script handles any custom processing of the spec file using the `fix-spec-file`
+# action in .packit.yaml. These steps only work on copr builds, not on official
+# Fedora builds.
 
-set -eo pipefail
+set -eox pipefail
 
-# Get Version from version/version.go in HEAD
-VERSION=$(grep '^const RawVersion' version/rawversion/version.go | cut -d\" -f2 | sed -e 's/-/~/')
+PACKAGE=podman
+
+# Set path to rpm spec file
+SPEC_FILE=rpm/$PACKAGE.spec
+
+# Get short sha
+SHORT_SHA=$(git rev-parse --short HEAD)
+
+# Get Version from HEAD
+VERSION=$(grep '^const RawVersion' version/rawversion/version.go | cut -d\" -f2)
+
+# RPM Version can't take "-"
+RPM_VERSION=$(echo $VERSION | sed -e 's/-/~/')
 
 # Generate source tarball from HEAD
-git archive --prefix=podman-$VERSION/ -o podman-$VERSION.tar.gz HEAD
+git-archive-all -C $(git rev-parse --show-toplevel) --prefix=$PACKAGE-$VERSION/ rpm/$PACKAGE-$VERSION.tar.gz
 
 # RPM Spec modifications
 
-# Use the Version from version/version.go in rpm spec
-sed -i "s/^Version:.*/Version: $VERSION/" podman.spec
+# Use the Version from HEAD in rpm spec
+sed -i "s/^Version:.*/Version: $RPM_VERSION/" $SPEC_FILE
 
 # Use Packit's supplied variable in the Release field in rpm spec.
-# podman.spec is generated using `rpkg spec --outdir ./` as mentioned in the
-# `post-upstream-clone` action in .packit.yaml.
-sed -i "s/^Release:.*/Release: $PACKIT_RPMSPEC_RELEASE%{?dist}/" podman.spec
+sed -i "s/^Release:.*/Release: $PACKIT_RPMSPEC_RELEASE%{?dist}/" $SPEC_FILE
+
+# Ensure last part of the release string is the git shortcommit without a
+# prepended "g"
+sed -i "/^Release: $PACKIT_RPMSPEC_RELEASE%{?dist}/ s/\(.*\)g/\1/" $SPEC_FILE
 
 # Use above generated tarball as Source in rpm spec
-sed -i "s/^Source:.*.tar.gz/Source: podman-$VERSION.tar.gz/" podman.spec
+sed -i "s/^Source0:.*.tar.gz/Source0: $PACKAGE-$VERSION.tar.gz/" $SPEC_FILE
 
-# Use the right build dir for autosetup stage in rpm spec
-sed -i "s/^%setup.*/%autosetup -Sgit -n %{name}-$VERSION/" podman.spec
+# Update setup macro to use the correct build dir
+sed -i "s/^%autosetup.*/%autosetup -Sgit -n %{name}-$VERSION/" $SPEC_FILE
+
+# Update relevant sed entries in spec file with the actual VERSION and SHORT_SHA
+# This allows podman --version to also show the SHORT_SHA along with the
+# VERSION
+sed -i "s/##VERSION##/$VERSION/" $SPEC_FILE
+sed -i "s/##SHORT_SHA##/$SHORT_SHA/" $SPEC_FILE

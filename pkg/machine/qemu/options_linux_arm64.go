@@ -1,15 +1,18 @@
+//go:build linux && arm64
+
 package qemu
 
 import (
-	"os"
 	"path/filepath"
+
+	"github.com/containers/storage/pkg/fileutils"
 )
 
 var (
 	QemuCommand = "qemu-system-aarch64"
 )
 
-func (v *MachineVM) addArchOptions() []string {
+func (q *QEMUStubber) addArchOptions(_ *setNewMachineCMDOpts) []string {
 	opts := []string{
 		"-accel", "kvm",
 		"-cpu", "host",
@@ -19,21 +22,13 @@ func (v *MachineVM) addArchOptions() []string {
 	return opts
 }
 
-func (v *MachineVM) prepare() error {
-	return nil
-}
-
-func (v *MachineVM) archRemovalFiles() []string {
-	return []string{}
-}
-
 func getQemuUefiFile(name string) string {
 	dirs := []string{
 		"/usr/share/qemu-efi-aarch64",
 		"/usr/share/edk2/aarch64",
 	}
 	for _, dir := range dirs {
-		if _, err := os.Stat(dir); err == nil {
+		if err := fileutils.Exists(dir); err == nil {
 			return filepath.Join(dir, name)
 		}
 	}

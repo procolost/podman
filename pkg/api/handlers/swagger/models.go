@@ -2,8 +2,9 @@
 package swagger
 
 import (
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/domain/entities"
 	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
 )
 
 // Details for creating a volume
@@ -48,3 +49,7 @@ type networkConnectRequestLibpod entities.NetworkConnectOptions
 // Network update
 // swagger:model
 type networkUpdateRequestLibpod entities.NetworkUpdateOptions
+
+// Container update
+// swagger:model
+type containerUpdateRequest container.UpdateConfig

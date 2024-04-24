@@ -21,6 +21,9 @@ to see if someone else has already reported it. If so, feel free to add
 your scenario, or additional information, to the discussion. Or simply
 "subscribe" to it to be notified when it is updated.
 
+Note: Older closed issues/PRs are automatically locked, if you have a similar
+problem please open a new issue instead of commenting.
+
 If you find a new issue with the project we'd love to hear about it! The most
 important aspect of a bug report is that it includes enough information for
 us to reproduce it. To make this easier, there are three types of issue
@@ -91,24 +94,6 @@ Makefile allow you to install needed tools:
 $ make install.tools
 ```
 
-### Prerequisite before build
-
-You need install some dependencies before building a binary.
-
-#### Fedora
-
-  ```shell
-  $ sudo dnf install gpgme-devel libseccomp-devel.x86_64 systemd-devel
-  $ export PKG_CONFIG_PATH="/usr/lib/pkgconfig"
-  ```
-
-#### Debian / Ubuntu
-
-  ```shell
-  $ sudo apt-get install -y libsystemd-dev libgpgme-dev libseccomp-dev
-  $ export PKG_CONFIG_PATH="/usr/lib/pkgconfig"
-  ```
-
 ### Building binaries and test your changes
 
 To test your changes do `make binaries` to generate your binaries.
@@ -161,9 +146,9 @@ Regardless of the type of PR, all PRs should include:
 * well documented code changes.
 * additional testcases. Ideally, they should fail w/o your code change applied.
   (With a few exceptions, CI hooks will block your PR unless your change
-  includes files named `*_test.go` or under the `test/` subdirectory. To
-  bypass this block, include the string `[NO NEW TESTS NEEDED]` in your
-  commit message).
+  includes files named `*_test.go` or under the `test/` subdirectory. Repo
+  admins may bypass this restriction by setting the 'No New Tests' GitHub
+  label on the PR).
 * documentation changes.
 
 Squash your commits into logical pieces of work that might want to be reviewed

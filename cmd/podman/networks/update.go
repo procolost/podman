@@ -4,9 +4,9 @@ import (
 	"fmt"
 
 	"github.com/containers/common/pkg/completion"
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/pkg/domain/entities"
 	"github.com/spf13/cobra"
 )
 
@@ -14,7 +14,7 @@ var (
 	networkUpdateDescription = `Update an existing podman network`
 	networkUpdateCommand     = &cobra.Command{
 		Use:               "update [options] NETWORK",
-		Short:             "update an existing podman network",
+		Short:             "Update an existing podman network",
 		Long:              networkUpdateDescription,
 		RunE:              networkUpdate,
 		Args:              cobra.ExactArgs(1),
@@ -31,9 +31,9 @@ func networkUpdateFlags(cmd *cobra.Command) {
 	flags := cmd.Flags()
 
 	addDNSServerFlagName := "dns-add"
-	flags.StringArrayVar(&networkUpdateOptions.AddDNSServers, addDNSServerFlagName, nil, "add network level nameservers")
+	flags.StringSliceVar(&networkUpdateOptions.AddDNSServers, addDNSServerFlagName, nil, "add network level nameservers")
 	removeDNSServerFlagName := "dns-drop"
-	flags.StringArrayVar(&networkUpdateOptions.RemoveDNSServers, removeDNSServerFlagName, nil, "remove network level nameservers")
+	flags.StringSliceVar(&networkUpdateOptions.RemoveDNSServers, removeDNSServerFlagName, nil, "remove network level nameservers")
 	_ = cmd.RegisterFlagCompletionFunc(addDNSServerFlagName, completion.AutocompleteNone)
 	_ = cmd.RegisterFlagCompletionFunc(removeDNSServerFlagName, completion.AutocompleteNone)
 }

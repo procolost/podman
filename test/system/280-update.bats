@@ -16,8 +16,8 @@ function teardown() {
 }
 
 
+# bats test_tags=distro-integration
 @test "podman update - test all options" {
-
     local cgv=1
     if is_cgroupsv2; then
         cgv=2;
@@ -125,6 +125,28 @@ device-write-iops   = /dev/zero:4000 | - | -                                    
         losetup -d $LOOPDEVICE
         LOOPDEVICE=
     fi
+}
+
+@test "podman update - set restart policy" {
+    touch ${PODMAN_TMPDIR}/sentinel
+    run_podman run --security-opt label=disable --name testctr -v ${PODMAN_TMPDIR}:/testdir -d $IMAGE sh -c "touch /testdir/alive; while test -e /testdir/sentinel; do sleep 0.1; done;"
+
+    run_podman container inspect testctr --format "{{ .HostConfig.RestartPolicy.Name }}"
+    is "$output" "no"
+
+    run_podman update --restart always testctr
+
+    run_podman container inspect testctr --format "{{ .HostConfig.RestartPolicy.Name }}"
+    is "$output" "always"
+
+    # Ensure the container is alive
+    wait_for_file ${PODMAN_TMPDIR}/alive
+
+    rm -f ${PODMAN_TMPDIR}/alive
+    rm -f ${PODMAN_TMPDIR}/sentinel
+
+    # Restart should ensure that the container comes back up and recreates the file
+    wait_for_file ${PODMAN_TMPDIR}/alive
 }
 
 # vim: filetype=sh

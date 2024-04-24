@@ -6,9 +6,9 @@ import (
 	"github.com/containers/common/pkg/auth"
 	"github.com/containers/common/pkg/completion"
 	commonFlag "github.com/containers/common/pkg/flag"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/domain/entities"
 	"github.com/spf13/cobra"
 )
 
@@ -33,7 +33,7 @@ func DefineCreateFlags(cmd *cobra.Command, cf *entities.ContainerCreateOptions, 
 
 	if mode == entities.CreateMode { // regular create flags
 		annotationFlagName := "annotation"
-		createFlags.StringSliceVar(
+		createFlags.StringArrayVar(
 			&cf.Annotation,
 			annotationFlagName, []string{},
 			"Add annotations to container (key=value)",
@@ -140,12 +140,14 @@ func DefineCreateFlags(cmd *cobra.Command, cf *entities.ContainerCreateOptions, 
 		if !registry.IsRemote() {
 			createFlags.BoolVar(
 				&cf.EnvHost,
-				"env-host", false, "Use all current host environment variables in container",
+				"env-host",
+				podmanConfig.ContainersConfDefaultsRO.Containers.EnvHost,
+				"Use all current host environment variables in container",
 			)
 		}
 
 		envFileFlagName := "env-file"
-		createFlags.StringSliceVar(
+		createFlags.StringArrayVar(
 			&cf.EnvFile,
 			envFileFlagName, []string{},
 			"Read in a file of environment variables",
@@ -246,7 +248,7 @@ func DefineCreateFlags(cmd *cobra.Command, cf *entities.ContainerCreateOptions, 
 		initPathFlagName := "init-path"
 		createFlags.StringVar(
 			&cf.InitPath,
-			initPathFlagName, initPath(),
+			initPathFlagName, "",
 			// Do not use  the Value field for setting the default value to determine user input (i.e., non-empty string)
 			"Path to the container-init binary",
 		)
@@ -280,7 +282,7 @@ func DefineCreateFlags(cmd *cobra.Command, cf *entities.ContainerCreateOptions, 
 		_ = cmd.RegisterFlagCompletionFunc(logDriverFlagName, AutocompleteLogDriver)
 
 		logOptFlagName := "log-opt"
-		createFlags.StringSliceVar(
+		createFlags.StringArrayVar(
 			&cf.LogOptions,
 			logOptFlagName, []string{},
 			"Logging driver options",
@@ -346,7 +348,7 @@ func DefineCreateFlags(cmd *cobra.Command, cf *entities.ContainerCreateOptions, 
 		_ = cmd.RegisterFlagCompletionFunc(podIDFileFlagName, completion.AutocompleteDefault)
 		createFlags.BoolVar(
 			&cf.Privileged,
-			"privileged", false,
+			"privileged", podmanConfig.ContainersConfDefaultsRO.Containers.Privileged,
 			"Give extended privileges to container",
 		)
 		createFlags.BoolVarP(
@@ -368,6 +370,14 @@ func DefineCreateFlags(cmd *cobra.Command, cf *entities.ContainerCreateOptions, 
 			"quiet", "q", false,
 			"Suppress output information when pulling images",
 		)
+		rdtClassFlagName := "rdt-class"
+		createFlags.StringVar(
+			&cf.IntelRdtClosID,
+			rdtClassFlagName, cf.IntelRdtClosID,
+			"Class of Service (COS) that the container should be assigned to",
+		)
+		_ = cmd.RegisterFlagCompletionFunc(rdtClassFlagName, AutocompletePullOption)
+
 		createFlags.BoolVar(
 			&cf.ReadOnly,
 			"read-only", podmanConfig.ContainersConfDefaultsRO.Containers.ReadOnly,
@@ -376,7 +386,7 @@ func DefineCreateFlags(cmd *cobra.Command, cf *entities.ContainerCreateOptions, 
 		createFlags.BoolVar(
 			&cf.ReadWriteTmpFS,
 			"read-only-tmpfs", cf.ReadWriteTmpFS,
-			"When running containers in read-only mode mount a read-write tmpfs on /run, /tmp and /var/tmp",
+			"When running --read-only containers mount read-write tmpfs on /dev, /dev/shm, /run, /tmp and /var/tmp",
 		)
 		requiresFlagName := "requires"
 		createFlags.StringSliceVar(
@@ -386,13 +396,12 @@ func DefineCreateFlags(cmd *cobra.Command, cf *entities.ContainerCreateOptions, 
 		)
 		_ = cmd.RegisterFlagCompletionFunc(requiresFlagName, AutocompleteContainers)
 
-		restartFlagName := "restart"
-		createFlags.StringVar(
-			&cf.Restart,
-			restartFlagName, "",
-			`Restart policy to apply when a container exits ("always"|"no"|"on-failure"|"unless-stopped")`,
-		)
-		_ = cmd.RegisterFlagCompletionFunc(restartFlagName, AutocompleteRestartOption)
+		retryFlagName := "retry"
+		createFlags.Uint(retryFlagName, registry.RetryDefault(), "number of times to retry in case of failure when performing pull")
+		_ = cmd.RegisterFlagCompletionFunc(retryFlagName, completion.AutocompleteNone)
+		retryDelayFlagName := "retry-delay"
+		createFlags.String(retryDelayFlagName, registry.RetryDelayDefault(), "delay between retries in case of pull failures")
+		_ = cmd.RegisterFlagCompletionFunc(retryDelayFlagName, completion.AutocompleteNone)
 
 		createFlags.BoolVar(
 			&cf.Rm,
@@ -593,7 +602,7 @@ func DefineCreateFlags(cmd *cobra.Command, cf *entities.ContainerCreateOptions, 
 		_ = cmd.RegisterFlagCompletionFunc(pidFileFlagName, completion.AutocompleteDefault)
 
 		chrootDirsFlagName := "chrootdirs"
-		createFlags.StringSliceVar(
+		createFlags.StringArrayVar(
 			&cf.ChrootDirs,
 			chrootDirsFlagName, []string{},
 			"Chroot directories inside the container",
@@ -609,7 +618,7 @@ func DefineCreateFlags(cmd *cobra.Command, cf *entities.ContainerCreateOptions, 
 		_ = cmd.RegisterFlagCompletionFunc(groupEntryName, completion.AutocompleteNone)
 
 		decryptionKeysFlagName := "decryption-key"
-		createFlags.StringSliceVar(
+		createFlags.StringArrayVar(
 			&cf.DecryptionKeys,
 			decryptionKeysFlagName, []string{},
 			"Key needed to decrypt the image (e.g. /path/to/key.pem)",
@@ -633,6 +642,16 @@ func DefineCreateFlags(cmd *cobra.Command, cf *entities.ContainerCreateOptions, 
 			"replace", false,
 			`If a container with the same name exists, replace it`,
 		)
+	}
+	// Restart is allowed for created, updated, and infra ctr
+	if mode == entities.InfraMode || mode == entities.CreateMode || mode == entities.UpdateMode {
+		restartFlagName := "restart"
+		createFlags.StringVar(
+			&cf.Restart,
+			restartFlagName, "",
+			`Restart policy to apply when a container exits ("always"|"no"|"never"|"on-failure"|"unless-stopped")`,
+		)
+		_ = cmd.RegisterFlagCompletionFunc(restartFlagName, AutocompleteRestartOption)
 	}
 	if mode == entities.InfraMode || (mode == entities.CreateMode) { // infra container flags, create should also pick these up
 		shmSizeFlagName := "shm-size"
@@ -689,6 +708,10 @@ func DefineCreateFlags(cmd *cobra.Command, cf *entities.ContainerCreateOptions, 
 			"GID map to use for the user namespace",
 		)
 		_ = cmd.RegisterFlagCompletionFunc(gidmapFlagName, completion.AutocompleteNone)
+
+		gpuFlagName := "gpus"
+		createFlags.StringSliceVar(&cf.GPUs, gpuFlagName, []string{}, "GPU devices to add to the container ('all' to pass all GPUs)")
+		_ = cmd.RegisterFlagCompletionFunc(gpuFlagName, completion.AutocompleteNone)
 
 		uidmapFlagName := "uidmap"
 		createFlags.StringSliceVar(
@@ -762,7 +785,7 @@ func DefineCreateFlags(cmd *cobra.Command, cf *entities.ContainerCreateOptions, 
 		_ = cmd.RegisterFlagCompletionFunc(labelFlagName, completion.AutocompleteNone)
 
 		labelFileFlagName := "label-file"
-		createFlags.StringSliceVar(
+		createFlags.StringArrayVar(
 			&cf.LabelFile,
 			labelFileFlagName, []string{},
 			"Read in a line delimited file of labels",
@@ -804,7 +827,7 @@ func DefineCreateFlags(cmd *cobra.Command, cf *entities.ContainerCreateOptions, 
 		_ = cmd.RegisterFlagCompletionFunc(volumeFlagName, AutocompleteVolumeFlag)
 
 		deviceFlagName := "device"
-		createFlags.StringSliceVar(
+		createFlags.StringArrayVar(
 			&cf.Devices,
 			deviceFlagName, devices(),
 			"Add a host device to the container",
@@ -888,7 +911,7 @@ func DefineCreateFlags(cmd *cobra.Command, cf *entities.ContainerCreateOptions, 
 	}
 	if mode == entities.CreateMode || mode == entities.UpdateMode {
 		deviceReadIopsFlagName := "device-read-iops"
-		createFlags.StringSliceVar(
+		createFlags.StringArrayVar(
 			&cf.DeviceReadIOPs,
 			deviceReadIopsFlagName, []string{},
 			"Limit read rate (IO per second) from a device (e.g. --device-read-iops=/dev/sda:1000)",
@@ -896,7 +919,7 @@ func DefineCreateFlags(cmd *cobra.Command, cf *entities.ContainerCreateOptions, 
 		_ = cmd.RegisterFlagCompletionFunc(deviceReadIopsFlagName, completion.AutocompleteDefault)
 
 		deviceWriteIopsFlagName := "device-write-iops"
-		createFlags.StringSliceVar(
+		createFlags.StringArrayVar(
 			&cf.DeviceWriteIOPs,
 			deviceWriteIopsFlagName, []string{},
 			"Limit write rate (IO per second) to a device (e.g. --device-write-iops=/dev/sda:1000)",
@@ -960,7 +983,7 @@ func DefineCreateFlags(cmd *cobra.Command, cf *entities.ContainerCreateOptions, 
 	_ = cmd.RegisterFlagCompletionFunc(memorySwapFlagName, completion.AutocompleteNone)
 
 	deviceReadBpsFlagName := "device-read-bps"
-	createFlags.StringSliceVar(
+	createFlags.StringArrayVar(
 		&cf.DeviceReadBPs,
 		deviceReadBpsFlagName, []string{},
 		"Limit read rate (bytes per second) from a device (e.g. --device-read-bps=/dev/sda:1mb)",
@@ -968,7 +991,7 @@ func DefineCreateFlags(cmd *cobra.Command, cf *entities.ContainerCreateOptions, 
 	_ = cmd.RegisterFlagCompletionFunc(deviceReadBpsFlagName, completion.AutocompleteDefault)
 
 	deviceWriteBpsFlagName := "device-write-bps"
-	createFlags.StringSliceVar(
+	createFlags.StringArrayVar(
 		&cf.DeviceWriteBPs,
 		deviceWriteBpsFlagName, []string{},
 		"Limit write rate (bytes per second) to a device (e.g. --device-write-bps=/dev/sda:1mb)",
@@ -984,7 +1007,7 @@ func DefineCreateFlags(cmd *cobra.Command, cf *entities.ContainerCreateOptions, 
 	_ = cmd.RegisterFlagCompletionFunc(blkioWeightFlagName, completion.AutocompleteNone)
 
 	blkioWeightDeviceFlagName := "blkio-weight-device"
-	createFlags.StringSliceVar(
+	createFlags.StringArrayVar(
 		&cf.BlkIOWeightDevice,
 		blkioWeightDeviceFlagName, []string{},
 		"Block IO weight (relative device weight, format: `DEVICE_NAME:WEIGHT`)",

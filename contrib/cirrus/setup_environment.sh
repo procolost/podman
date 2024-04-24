@@ -12,6 +12,8 @@ set -e
 # shellcheck source=./contrib/cirrus/lib.sh
 source $(dirname $0)/lib.sh
 
+showrun echo "starting"
+
 die_unknown() {
     local var_name="$1"
     req_env_vars var_name
@@ -38,12 +40,8 @@ done
 
 cp hack/podman-registry /bin
 
-# Some test operations & checks require a git "identity"
-_gc='git config --file /root/.gitconfig'
-$_gc user.email "TMcTestFace@example.com"
-$_gc user.name "Testy McTestface"
 # Bypass git safety/security checks when operating in a throwaway environment
-git config --system --add safe.directory $GOSRC
+showrun git config --global --add safe.directory $GOSRC
 
 # Ensure that all lower-level contexts and child-processes have
 # ready access to higher level orchestration (e.g Cirrus-CI)
@@ -63,6 +61,7 @@ echo -e "\n# Begin single-use VM global variables (${BASH_SOURCE[0]})" \
 # shellcheck disable=SC2154
 grep -q "$DISTRO_NV" <<<"$OS_REL_VER" || \
     grep -q "$OS_REL_VER" <<<"$DISTRO_NV" || \
+    grep -q "rawhide" <<<"$DISTRO_NV" || \
     die "Automation spec. '$DISTRO_NV'; actual host '$OS_REL_VER'"
 
 # Only allow this script to execute once
@@ -81,6 +80,7 @@ mkdir -p /etc/containers/containers.conf.d
 # respectively.
 # **IMPORTANT**: $OCI_RUNTIME is a fakeout! It is used only in e2e tests.
 # For actual podman, as in system tests, we force runtime in containers.conf
+showrun echo "conditional check: CG_FS_TYPE [=$CG_FS_TYPE]"
 case "$CG_FS_TYPE" in
     tmpfs)
         if ((CONTAINER==0)); then
@@ -95,11 +95,16 @@ case "$CG_FS_TYPE" in
     *) die_unknown CG_FS_TYPE
 esac
 
-# Force the requested database backend without having to use command-line args
+# For testing boltdb without having to use --db-backend.
+# As of #20318 (2023-10-10) sqlite is the default, so do not create
+# a containers.conf file in that condition.
 # shellcheck disable=SC2154
-printf "[engine]\ndatabase_backend=\"$CI_DESIRED_DATABASE\"\n" > /etc/containers/containers.conf.d/92-db.conf
+if [[ "${CI_DESIRED_DATABASE:-sqlite}" != "sqlite" ]]; then
+    printf "[engine]\ndatabase_backend=\"$CI_DESIRED_DATABASE\"\n" > /etc/containers/containers.conf.d/92-db.conf
+fi
 
 if ((CONTAINER==0)); then  # Not yet running inside a container
+    showrun echo "conditional setup for CONTAINER == 0"
     # Discovered reemergence of BFQ scheduler bug in kernel 5.8.12-200
     # which causes a kernel panic when system is under heavy I/O load.
     # Disable the I/O scheduler (a.k.a. elevator) for all environments,
@@ -129,33 +134,28 @@ fi
 # Which distribution are we testing on.
 case "$OS_RELEASE_ID" in
     debian)
+        showrun echo "more conditional setup for debian"
         # FIXME 2023-04-11: workaround for runc regression causing failure
         # in system tests: "skipping device /dev/char/10:200 for systemd"
+        # (Checked on 2023-08-08 and it's still too old: 1.1.5)
         # FIXME: please remove this once runc >= 1.2 makes it into debian.
-        modprobe tun
+        showrun modprobe tun
         ;;
     fedora)
+        showrun echo "conditional setup for fedora"
         if ((CONTAINER==0)); then
             # All SELinux distros need this for systemd-in-a-container
             msg "Enabling container_manage_cgroup"
-            setsebool container_manage_cgroup true
+            showrun setsebool container_manage_cgroup true
         fi
         ;;
     *) die_unknown OS_RELEASE_ID
 esac
 
-# Networking: force CNI or Netavark as requested in .cirrus.yml
-# (this variable is mandatory).
-# shellcheck disable=SC2154
-case "$CI_DESIRED_NETWORK" in
-    netavark)   use_netavark ;;
-    cni)        use_cni ;;
-    *)          die_unknown CI_DESIRED_NETWORK ;;
-esac
-
 # Database: force SQLite or BoltDB as requested in .cirrus.yml.
-# If unset, will default to BoltDB.
+# If unset, will default to SQLite.
 # shellcheck disable=SC2154
+showrun echo "about to set up for CI_DESIRED_DATABASE [=$CI_DESIRED_DATABASE]"
 case "$CI_DESIRED_DATABASE" in
     sqlite)
         warn "Forcing PODMAN_DB=sqlite"
@@ -173,8 +173,34 @@ case "$CI_DESIRED_DATABASE" in
         ;;
 esac
 
+# Force the requested storage driver for both system and e2e tests.
+# This is (sigh) different because e2e tests have their own special way
+# of ignoring system defaults.
+# shellcheck disable=SC2154
+showrun echo "Setting CI_DESIRED_STORAGE [=$CI_DESIRED_STORAGE] for *system* tests"
+conf=/etc/containers/storage.conf
+if [[ -e $conf ]]; then
+    die "FATAL! INTERNAL ERROR! Cannot override $conf"
+fi
+cat <<EOF >$conf
+[storage]
+driver = "$CI_DESIRED_STORAGE"
+runroot = "/run/containers/storage"
+graphroot = "/var/lib/containers/storage"
+EOF
+
+# Since we've potentially changed important config settings, reset.
+# This prevents `database graph driver "" does not match "overlay"`
+# on Debian.
+rm -rf /var/lib/containers/storage
+
+# shellcheck disable=SC2154
+showrun echo "Setting CI_DESIRED_STORAGE [=$CI_DESIRED_STORAGE] for *e2e* tests"
+echo "STORAGE_FS=$CI_DESIRED_STORAGE" >>/etc/ci_environment
+
 # Required to be defined by caller: The environment where primary testing happens
 # shellcheck disable=SC2154
+showrun echo "about to set up for TEST_ENVIRON [=$TEST_ENVIRON]"
 case "$TEST_ENVIRON" in
     host)
         # The e2e tests wrongly guess `--cgroup-manager` option
@@ -222,6 +248,7 @@ case "$TEST_ENVIRON" in
 esac
 
 # Required to be defined by caller: Are we testing as root or a regular user
+showrun echo "about to set up for PRIV_NAME [=$PRIV_NAME]"
 case "$PRIV_NAME" in
     root)
         # shellcheck disable=SC2154
@@ -241,12 +268,6 @@ case "$PRIV_NAME" in
     *) die_unknown PRIV_NAME
 esac
 
-# shellcheck disable=SC2154
-if [[ -n "$ROOTLESS_USER" ]]; then
-    echo "ROOTLESS_USER=$ROOTLESS_USER" >> /etc/ci_environment
-    echo "ROOTLESS_UID=$ROOTLESS_UID" >> /etc/ci_environment
-fi
-
 # FIXME! experimental workaround for #16973, the "lookup cdn03.quay.io" flake.
 #
 # If you are reading this on or after April 2023:
@@ -259,11 +280,15 @@ fi
 #
 # Either way, this block of code should be removed after March 31 2023
 # because it creates a system that is not representative of real-world Fedora.
+#
+# 2024-01-25 update: ha ha. This fix has proven so popular that it is
+# being used by other groups who were seeing the cdn03 flake. Looks like
+# we're stuck with it.
 if ((CONTAINER==0)); then
     nsswitch=/etc/authselect/nsswitch.conf
     if [[ -e $nsswitch ]]; then
         if grep -q -E 'hosts:.*resolve' $nsswitch; then
-            msg "Disabling systemd-resolved"
+            showrun echo "Disabling systemd-resolved"
             sed -i -e 's/^\(hosts: *\).*/\1files dns myhostname/' $nsswitch
             systemctl stop systemd-resolved
             rm -f /etc/resolv.conf
@@ -300,59 +325,57 @@ esac
 
 # Required to be defined by caller: The primary type of testing that will be performed
 # shellcheck disable=SC2154
+showrun echo "about to set up for TEST_FLAVOR [=$TEST_FLAVOR]"
 case "$TEST_FLAVOR" in
     validate)
-        dnf install -y $PACKAGE_DOWNLOAD_DIR/python3*.rpm
+        showrun dnf install -y $PACKAGE_DOWNLOAD_DIR/python3*.rpm
         # For some reason, this is also needed for validation
-        make .install.pre-commit .install.gitvalidation
+        showrun make .install.pre-commit .install.gitvalidation
         ;;
     altbuild)
         # Defined in .cirrus.yml
         # shellcheck disable=SC2154
         if [[ "$ALT_NAME" =~ RPM ]]; then
-            bigto dnf install -y glibc-minimal-langpack go-rpm-macros rpkg rpm-build shadow-utils-subid-devel
+            showrun bigto dnf install -y glibc-minimal-langpack go-rpm-macros rpkg rpm-build shadow-utils-subid-devel
         fi
         ;;
     docker-py)
         remove_packaged_podman_files
-        make install PREFIX=/usr ETCDIR=/etc
+        showrun make install PREFIX=/usr ETCDIR=/etc
 
         msg "Installing previously downloaded/cached packages"
-        dnf install -y $PACKAGE_DOWNLOAD_DIR/python3*.rpm
+        showrun dnf install -y $PACKAGE_DOWNLOAD_DIR/python3*.rpm
         virtualenv .venv/docker-py
         source .venv/docker-py/bin/activate
-        pip install --upgrade pip
-        pip install --requirement $GOSRC/test/python/requirements.txt
+        showrun pip install --upgrade pip
+        showrun pip install --requirement $GOSRC/test/python/requirements.txt
         ;;
     build) make clean ;;
     unit)
-        make .install.ginkgo
+        showrun make .install.ginkgo
         ;;
     compose_v2)
-        dnf -y remove docker-compose
-        curl -SL https://github.com/docker/compose/releases/download/v2.2.3/docker-compose-linux-x86_64 -o /usr/local/bin/docker-compose
-        chmod +x /usr/local/bin/docker-compose
+        showrun dnf -y remove docker-compose
+        showrun curl -SL https://github.com/docker/compose/releases/download/v2.2.3/docker-compose-linux-x86_64 -o /usr/local/bin/docker-compose
+        showrun chmod +x /usr/local/bin/docker-compose
         ;& # Continue with next item
     apiv2)
         msg "Installing previously downloaded/cached packages"
-        dnf install -y $PACKAGE_DOWNLOAD_DIR/python3*.rpm
+        showrun dnf install -y $PACKAGE_DOWNLOAD_DIR/python3*.rpm
         virtualenv .venv/requests
         source .venv/requests/bin/activate
-        pip install --upgrade pip
-        pip install --requirement $GOSRC/test/apiv2/python/requirements.txt
-        ;&  # continue with next item
-    compose)
-        make install.tools
-        dnf install -y podman-docker*
+        showrun pip install --upgrade pip
+        showrun pip install --requirement $GOSRC/test/apiv2/python/requirements.txt
         ;&  # continue with next item
     int)
-        make .install.ginkgo
+        showrun make .install.ginkgo
         ;&
     sys) ;&
     upgrade_test) ;&
     bud) ;&
     bindings) ;&
     endpoint)
+        showrun echo "Entering shared endpoint setup"
         # Use existing host bits when testing is to happen inside a container
         # since this script will run again in that environment.
         # shellcheck disable=SC2154
@@ -373,26 +396,56 @@ case "$TEST_FLAVOR" in
 
         install_test_configs
         ;;
-    minikube)
-        dnf install -y $PACKAGE_DOWNLOAD_DIR/minikube-latest*
+    farm)
+        showrun loginctl enable-linger $ROOTLESS_USER
+        showrun ssh $ROOTLESS_USER@localhost systemctl --user enable --now podman.socket
         remove_packaged_podman_files
-        make install.tools
-        make install PREFIX=/usr ETCDIR=/etc
-        minikube config set driver podman
+        showrun make install PREFIX=/usr ETCDIR=/etc
         install_test_configs
         ;;
-    machine)
-        dnf install -y podman-gvproxy*
+    minikube)
+        showrun dnf install -y $PACKAGE_DOWNLOAD_DIR/minikube-latest*
         remove_packaged_podman_files
-        make install PREFIX=/usr ETCDIR=/etc
+        showrun make install.tools
+        showrun make install PREFIX=/usr ETCDIR=/etc
+        showrun minikube config set driver podman
+        install_test_configs
+        ;;
+    machine-linux)
+        showrun dnf install -y podman-gvproxy*
+        remove_packaged_podman_files
+        showrun make install PREFIX=/usr ETCDIR=/etc
         install_test_configs
         ;;
     swagger)
-        make .install.swagger
+        showrun make .install.swagger
         ;;
     release) ;;
     *) die_unknown TEST_FLAVOR
 esac
+
+# See ./contrib/cirrus/CIModes.md.
+# Vars defined by cirrus-ci
+# shellcheck disable=SC2154
+if [[ ! "$OS_RELEASE_ID" =~ "debian" ]] && \
+   [[ "$CIRRUS_CHANGE_TITLE" =~ CI:NEXT ]]
+then
+    showrun echo "Entering setup for CI:NEXT"
+    # shellcheck disable=SC2154
+    if [[ "$CIRRUS_PR_DRAFT" != "true" ]]; then
+        die "Magic 'CI:NEXT' string can only be used on DRAFT PRs"
+    fi
+
+    showrun dnf copr enable rhcontainerbot/podman-next -y
+
+    # DNF ignores repos that don't exist.  For example, updates-testing is not
+    # enabled on Fedora N-1 CI VMs.  Don't updated everything, isolate just the
+    # podman-next COPR updates.
+    showrun dnf update -y \
+      "--enablerepo=copr:copr.fedorainfracloud.org:rhcontainerbot:podman-next" \
+      "--disablerepo=copr:copr.fedorainfracloud.org:sbrivio:passt" \
+      "--disablerepo=fedora*" "--disablerepo=updates*"
+fi
 
 # Must be the very last command.  Prevents setup from running twice.
 echo 'SETUP_ENVIRONMENT=1' >> /etc/ci_environment
@@ -401,3 +454,5 @@ echo -e "\n# End of global variable definitions" \
 
 msg "Global CI Environment vars.:"
 grep -Ev '^#' /etc/ci_environment | sort | indent
+
+showrun echo "finished"

@@ -1,5 +1,4 @@
 //go:build windows
-// +build windows
 
 package wsl
 
@@ -8,20 +7,19 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"unicode/utf16"
 	"unsafe"
 
+	"github.com/containers/storage/pkg/fileutils"
 	"github.com/containers/storage/pkg/homedir"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 )
 
-// nolint
 type SHELLEXECUTEINFO struct {
 	cbSize         uint32
 	fMask          uint32
@@ -40,7 +38,6 @@ type SHELLEXECUTEINFO struct {
 	hProcess       syscall.Handle
 }
 
-// nolint
 type Luid struct {
 	lowPart  uint32
 	highPart int32
@@ -56,20 +53,30 @@ type TokenPrivileges struct {
 	privileges     [1]LuidAndAttributes
 }
 
-// nolint // Cleaner to refer to the official OS constant names, and consistent with syscall
+// Cleaner to refer to the official OS constant names, and consistent with syscall
 const (
-	SEE_MASK_NOCLOSEPROCESS         = 0x40
-	EWX_FORCEIFHUNG                 = 0x10
-	EWX_REBOOT                      = 0x02
-	EWX_RESTARTAPPS                 = 0x40
-	SHTDN_REASON_MAJOR_APPLICATION  = 0x00040000
+	//nolint:stylecheck
+	SEE_MASK_NOCLOSEPROCESS = 0x40
+	//nolint:stylecheck
+	EWX_FORCEIFHUNG = 0x10
+	//nolint:stylecheck
+	EWX_REBOOT = 0x02
+	//nolint:stylecheck
+	EWX_RESTARTAPPS = 0x40
+	//nolint:stylecheck
+	SHTDN_REASON_MAJOR_APPLICATION = 0x00040000
+	//nolint:stylecheck
 	SHTDN_REASON_MINOR_INSTALLATION = 0x00000002
-	SHTDN_REASON_FLAG_PLANNED       = 0x80000000
-	TOKEN_ADJUST_PRIVILEGES         = 0x0020
-	TOKEN_QUERY                     = 0x0008
-	SE_PRIVILEGE_ENABLED            = 0x00000002
-	SE_ERR_ACCESSDENIED             = 0x05
-	WM_QUIT                         = 0x12
+	//nolint:stylecheck
+	SHTDN_REASON_FLAG_PLANNED = 0x80000000
+	//nolint:stylecheck
+	TOKEN_ADJUST_PRIVILEGES = 0x0020
+	//nolint:stylecheck
+	TOKEN_QUERY = 0x0008
+	//nolint:stylecheck
+	SE_PRIVILEGE_ENABLED = 0x00000002
+	//nolint:stylecheck
+	SE_ERR_ACCESSDENIED = 0x05
 )
 
 func winVersionAtLeast(major uint, minor uint, build uint) bool {
@@ -90,7 +97,7 @@ func winVersionAtLeast(major uint, minor uint, build uint) bool {
 	return true
 }
 
-func hasAdminRights() bool {
+func HasAdminRights() bool {
 	var sid *windows.SID
 
 	// See: https://coolaj86.com/articles/golang-and-windows-and-admins-oh-my/
@@ -104,7 +111,9 @@ func hasAdminRights() bool {
 		logrus.Warnf("SID allocation error: %s", err)
 		return false
 	}
-	defer windows.FreeSid(sid)
+	defer func() {
+		_ = windows.FreeSid(sid)
+	}()
 
 	//  From MS docs:
 	// "If TokenHandle is NULL, CheckTokenMembership uses the impersonation
@@ -151,8 +160,10 @@ func relaunchElevatedWait() error {
 		return wrapMaybef(err, "could not launch process, ShellEX Error = %d", info.hInstApp)
 	}
 
-	handle := syscall.Handle(info.hProcess)
-	defer syscall.CloseHandle(handle)
+	handle := info.hProcess
+	defer func() {
+		_ = syscall.CloseHandle(handle)
+	}()
 
 	w, err := syscall.WaitForSingleObject(handle, syscall.INFINITE)
 	switch w {
@@ -215,7 +226,7 @@ func reboot() error {
 	}
 
 	command := fmt.Sprintf(pShellLaunch, commFile)
-	if _, err := os.Lstat(filepath.Join(os.Getenv(localAppData), wtLocation)); err == nil {
+	if err := fileutils.Lexists(filepath.Join(os.Getenv(localAppData), wtLocation)); err == nil {
 		wtCommand := wtPrefix + command
 		// RunOnce is limited to 260 chars (supposedly no longer in Builds >= 19489)
 		// For now fallback in cases of long usernames (>89 chars)
@@ -268,6 +279,7 @@ func obtainShutdownPrivilege() error {
 	}
 
 	var privs TokenPrivileges
+	//nolint:staticcheck
 	if ret, _, err := LookupPrivilegeValue.Call(uintptr(0), uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(SeShutdownName))), uintptr(unsafe.Pointer(&(privs.privileges[0].luid)))); ret != 1 {
 		return fmt.Errorf("looking up shutdown privilege: %w", err)
 	}
@@ -338,24 +350,4 @@ func buildCommandArgs(elevate bool) string {
 		}
 	}
 	return strings.Join(args, " ")
-}
-
-func sendQuit(tid uint32) {
-	user32 := syscall.NewLazyDLL("user32.dll")
-	postMessage := user32.NewProc("PostThreadMessageW")
-	postMessage.Call(uintptr(tid), WM_QUIT, 0, 0)
-}
-
-func SilentExec(command string, args ...string) error {
-	cmd := exec.Command(command, args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x08000000}
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	return cmd.Run()
-}
-
-func SilentExecCmd(command string, args ...string) *exec.Cmd {
-	cmd := exec.Command(command, args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x08000000}
-	return cmd
 }

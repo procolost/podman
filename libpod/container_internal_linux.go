@@ -1,5 +1,4 @@
-//go:build linux
-// +build linux
+//go:build !remote
 
 package libpod
 
@@ -15,12 +14,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/containers/common/libnetwork/slirp4netns"
 	"github.com/containers/common/libnetwork/types"
 	"github.com/containers/common/pkg/cgroups"
 	"github.com/containers/common/pkg/config"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/rootless"
-	"github.com/containers/podman/v4/utils"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/rootless"
 	spec "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/opencontainers/runtime-tools/generate"
 	"github.com/opencontainers/selinux/go-selinux/label"
@@ -29,7 +28,7 @@ import (
 )
 
 var (
-	bindOptions = []string{"bind", "rprivate"}
+	bindOptions = []string{define.TypeBind, "rprivate"}
 )
 
 func (c *Container) mountSHM(shmOptions string) error {
@@ -38,7 +37,7 @@ func (c *Container) mountSHM(shmOptions string) error {
 		contextType = "rootcontext"
 	}
 
-	if err := unix.Mount("shm", c.config.ShmDir, "tmpfs", unix.MS_NOEXEC|unix.MS_NOSUID|unix.MS_NODEV,
+	if err := unix.Mount("shm", c.config.ShmDir, define.TypeTmpfs, unix.MS_NOEXEC|unix.MS_NOSUID|unix.MS_NODEV,
 		label.FormatMountLabelByType(shmOptions, c.config.MountLabel, contextType)); err != nil {
 		return fmt.Errorf("failed to mount shm tmpfs %q: %w", c.config.ShmDir, err)
 	}
@@ -176,7 +175,6 @@ func (c *Container) cleanupNetwork() error {
 
 	c.state.NetNS = ""
 	c.state.NetworkStatus = nil
-	c.state.NetworkStatusOld = nil
 
 	if c.valid {
 		return c.save()
@@ -224,8 +222,8 @@ func (c *Container) setupSystemd(mounts []spec.Mount, g generate.Generator) erro
 		}
 		tmpfsMnt := spec.Mount{
 			Destination: dest,
-			Type:        "tmpfs",
-			Source:      "tmpfs",
+			Type:        define.TypeTmpfs,
+			Source:      define.TypeTmpfs,
 			Options:     append(options, "tmpcopyup", shmSizeSystemdMntOpt),
 		}
 		g.AddMount(tmpfsMnt)
@@ -236,8 +234,8 @@ func (c *Container) setupSystemd(mounts []spec.Mount, g generate.Generator) erro
 		}
 		tmpfsMnt := spec.Mount{
 			Destination: dest,
-			Type:        "tmpfs",
-			Source:      "tmpfs",
+			Type:        define.TypeTmpfs,
+			Source:      define.TypeTmpfs,
 			Options:     append(options, "tmpcopyup", shmSizeSystemdMntOpt),
 		}
 		g.AddMount(tmpfsMnt)
@@ -270,9 +268,9 @@ func (c *Container) setupSystemd(mounts []spec.Mount, g generate.Generator) erro
 		} else {
 			systemdMnt = spec.Mount{
 				Destination: "/sys/fs/cgroup",
-				Type:        "bind",
+				Type:        define.TypeBind,
 				Source:      "/sys/fs/cgroup",
-				Options:     []string{"bind", "private", "rw"},
+				Options:     []string{define.TypeBind, "private", "rw"},
 			}
 		}
 		g.AddMount(systemdMnt)
@@ -281,7 +279,7 @@ func (c *Container) setupSystemd(mounts []spec.Mount, g generate.Generator) erro
 		if hasCgroupNs && !hasSystemdMount {
 			return errors.New("cgroup namespace is not supported with cgroup v1 and systemd mode")
 		}
-		mountOptions := []string{"bind", "rprivate"}
+		mountOptions := []string{define.TypeBind, "rprivate"}
 
 		if !hasSystemdMount {
 			skipMount := hasSystemdMount
@@ -310,7 +308,7 @@ func (c *Container) setupSystemd(mounts []spec.Mount, g generate.Generator) erro
 			if !skipMount {
 				systemdMnt := spec.Mount{
 					Destination: "/sys/fs/cgroup/systemd",
-					Type:        "bind",
+					Type:        define.TypeBind,
 					Source:      "/sys/fs/cgroup/systemd",
 					Options:     mountOptions,
 				}
@@ -389,7 +387,7 @@ func (c *Container) getOCICgroupPath() (string, error) {
 	case c.config.NoCgroups:
 		return "", nil
 	case c.config.CgroupsMode == cgroupSplit:
-		selfCgroup, err := utils.GetOwnCgroupDisallowRoot()
+		selfCgroup, err := cgroups.GetOwnCgroupDisallowRoot()
 		if err != nil {
 			return "", err
 		}
@@ -413,27 +411,6 @@ func (c *Container) getOCICgroupPath() (string, error) {
 	default:
 		return "", fmt.Errorf("invalid cgroup manager %s requested: %w", cgroupManager, define.ErrInvalidArg)
 	}
-}
-
-// If the container is rootless, set up the slirp4netns network
-func (c *Container) setupRootlessNetwork() error {
-	// set up slirp4netns again because slirp4netns will die when conmon exits
-	if c.config.NetMode.IsSlirp4netns() {
-		err := c.runtime.setupSlirp4netns(c, c.state.NetNS)
-		if err != nil {
-			return err
-		}
-	}
-
-	// set up rootlesskit port forwarder again since it dies when conmon exits
-	// we use rootlesskit port forwarder only as rootless and when bridge network is used
-	if rootless.IsRootless() && c.config.NetMode.IsBridge() && len(c.config.PortMappings) > 0 {
-		err := c.runtime.setupRootlessPortMappingViaRLK(c, c.state.NetNS, c.state.NetworkStatus)
-		if err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func openDirectory(path string) (fd int, err error) {
@@ -618,10 +595,15 @@ func (c *Container) setCgroupsPath(g *generate.Generator) error {
 	return nil
 }
 
-func (c *Container) addSlirp4netnsDNS(nameservers []string) []string {
+// addSpecialDNS adds special dns servers for slirp4netns and pasta
+func (c *Container) addSpecialDNS(nameservers []string) []string {
+	if c.pastaResult != nil {
+		nameservers = append(nameservers, c.pastaResult.DNSForwardIPs...)
+	}
+
 	// slirp4netns has a built in DNS forwarder.
 	if c.config.NetMode.IsSlirp4netns() {
-		slirp4netnsDNS, err := GetSlirp4netnsDNS(c.slirp4netnsSubnet)
+		slirp4netnsDNS, err := slirp4netns.GetDNS(c.slirp4netnsSubnet)
 		if err != nil {
 			logrus.Warn("Failed to determine Slirp4netns DNS: ", err.Error())
 		} else {
@@ -631,20 +613,28 @@ func (c *Container) addSlirp4netnsDNS(nameservers []string) []string {
 	return nameservers
 }
 
-func (c *Container) isSlirp4netnsIPv6() (bool, error) {
+func (c *Container) isSlirp4netnsIPv6() bool {
 	if c.config.NetMode.IsSlirp4netns() {
-		ctrNetworkSlipOpts := []string{}
-		if c.config.NetworkOptions != nil {
-			ctrNetworkSlipOpts = append(ctrNetworkSlipOpts, c.config.NetworkOptions["slirp4netns"]...)
+		extraOptions := c.config.NetworkOptions[slirp4netns.BinaryName]
+		options := make([]string, 0, len(c.runtime.config.Engine.NetworkCmdOptions.Get())+len(extraOptions))
+		options = append(options, c.runtime.config.Engine.NetworkCmdOptions.Get()...)
+		options = append(options, extraOptions...)
+
+		// loop backwards as the last argument wins and we can exit early
+		// This should be kept in sync with c/common/libnetwork/slirp4netns.
+		for i := len(options) - 1; i >= 0; i-- {
+			switch options[i] {
+			case "enable_ipv6=true":
+				return true
+			case "enable_ipv6=false":
+				return false
+			}
 		}
-		slirpOpts, err := parseSlirp4netnsNetworkOptions(c.runtime, ctrNetworkSlipOpts)
-		if err != nil {
-			return false, err
-		}
-		return slirpOpts.enableIPv6, nil
+		// default is true
+		return true
 	}
 
-	return false, nil
+	return false
 }
 
 // check for net=none
@@ -750,7 +740,7 @@ func (c *Container) safeMountSubPath(mountPoint, subpath string) (s *safeMountIn
 	if err != nil {
 		return nil, err
 	}
-	npath := ""
+	var npath string
 	switch {
 	case fi.Mode()&fs.ModeSymlink != 0:
 		return nil, fmt.Errorf("file %q is a symlink", joinedPath)
@@ -774,4 +764,44 @@ func (c *Container) safeMountSubPath(mountPoint, subpath string) (s *safeMountIn
 		file:       f,
 		mountPoint: npath,
 	}, nil
+}
+
+func (c *Container) makePlatformMtabLink(etcInTheContainerFd, rootUID, rootGID int) error {
+	// If /etc/mtab does not exist in container image, then we need to
+	// create it, so that mount command within the container will work.
+	err := unix.Symlinkat("/proc/mounts", etcInTheContainerFd, "mtab")
+	if err != nil && !os.IsExist(err) {
+		return fmt.Errorf("creating /etc/mtab symlink: %w", err)
+	}
+	// If the symlink was created, then also chown it to root in the container
+	if err == nil && (rootUID != 0 || rootGID != 0) {
+		err = unix.Fchownat(etcInTheContainerFd, "mtab", rootUID, rootGID, unix.AT_SYMLINK_NOFOLLOW)
+		if err != nil {
+			return fmt.Errorf("chown /etc/mtab: %w", err)
+		}
+	}
+	return nil
+}
+
+func (c *Container) getPlatformRunPath() (string, error) {
+	return "/run", nil
+}
+
+func (c *Container) addMaskedPaths(g *generate.Generator) {
+	if !c.config.Privileged && g.Config != nil && g.Config.Linux != nil && len(g.Config.Linux.MaskedPaths) > 0 {
+		g.AddLinuxMaskedPaths("/sys/devices/virtual/powercap")
+	}
+}
+
+func (c *Container) hasPrivateUTS() bool {
+	privateUTS := false
+	if c.config.Spec.Linux != nil {
+		for _, ns := range c.config.Spec.Linux.Namespaces {
+			if ns.Type == spec.UTSNamespace {
+				privateUTS = true
+				break
+			}
+		}
+	}
+	return privateUTS
 }

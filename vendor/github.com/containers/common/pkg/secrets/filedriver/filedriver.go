@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 	"sort"
 
+	"github.com/containers/storage/pkg/fileutils"
 	"github.com/containers/storage/pkg/lockfile"
+	"golang.org/x/exp/maps"
 )
 
 // secretsDataFile is the file where secrets data/payload will be stored
@@ -56,10 +58,7 @@ func (d *Driver) List() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	allID := make([]string, 0, len(secretData))
-	for k := range secretData {
-		allID = append(allID, k)
-	}
+	allID := maps.Keys(secretData)
 	sort.Strings(allID)
 	return allID, err
 }
@@ -79,7 +78,7 @@ func (d *Driver) Lookup(id string) ([]byte, error) {
 	return nil, fmt.Errorf("%s: %w", id, errNoSecretData)
 }
 
-// Store stores the bytes associated with an ID. An error is returned if the ID arleady exists
+// Store stores the bytes associated with an ID. An error is returned if the ID already exists
 func (d *Driver) Store(id string, data []byte) error {
 	d.lockfile.Lock()
 	defer d.lockfile.Unlock()
@@ -130,7 +129,7 @@ func (d *Driver) Delete(id string) error {
 // getAllData reads the data file and returns all data
 func (d *Driver) getAllData() (map[string][]byte, error) {
 	// check if the db file exists
-	_, err := os.Stat(d.secretsDataFilePath)
+	err := fileutils.Exists(d.secretsDataFilePath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			// the file will be created later on a store()
@@ -150,7 +149,7 @@ func (d *Driver) getAllData() (map[string][]byte, error) {
 		return nil, err
 	}
 	secretData := new(map[string][]byte)
-	err = json.Unmarshal([]byte(byteValue), secretData)
+	err = json.Unmarshal(byteValue, secretData)
 	if err != nil {
 		return nil, err
 	}

@@ -1,3 +1,5 @@
+//go:build !remote
+
 package libpod
 
 import (
@@ -5,12 +7,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v5/libpod/define"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 )
@@ -60,6 +63,7 @@ func (c *Container) runHealthCheck(ctx context.Context, isStartup bool) (define.
 		returnCode    int
 		inStartPeriod bool
 	)
+
 	hcCommand := c.HealthCheckConfig().Test
 	if isStartup {
 		logrus.Debugf("Running startup healthcheck for container %s", c.ID())
@@ -162,9 +166,18 @@ func (c *Container) runHealthCheck(ctx context.Context, isStartup bool) (define.
 	}
 
 	hcl := newHealthCheckLog(timeStart, timeEnd, returnCode, eventLog)
-	logStatus, err := c.updateHealthCheckLog(hcl, inStartPeriod)
+	logStatus, err := c.updateHealthCheckLog(hcl, inStartPeriod, isStartup)
 	if err != nil {
 		return hcResult, "", fmt.Errorf("unable to update health check log %s for %s: %w", c.healthCheckLogPath(), c.ID(), err)
+	}
+
+	// Write HC event with appropriate status as the last thing before we
+	// return.
+	if hcResult == define.HealthCheckNotDefined || hcResult == define.HealthCheckInternalError {
+		return hcResult, logStatus, hcErr
+	}
+	if c.runtime.config.Engine.HealthcheckEvents {
+		c.newContainerHealthCheckEvent(logStatus)
 	}
 
 	return hcResult, logStatus, hcErr
@@ -335,7 +348,7 @@ func newHealthCheckLog(start, end time.Time, exitCode int, log string) define.He
 	}
 }
 
-// updatedHealthCheckStatus updates the health status of the container
+// updateHealthStatus updates the health status of the container
 // in the healthcheck log
 func (c *Container) updateHealthStatus(status string) error {
 	healthCheck, err := c.getHealthCheckLog()
@@ -350,7 +363,7 @@ func (c *Container) updateHealthStatus(status string) error {
 	return os.WriteFile(c.healthCheckLogPath(), newResults, 0700)
 }
 
-// isUnhealthy returns if the current health check status in unhealthy.
+// isUnhealthy returns true if the current health check status is unhealthy.
 func (c *Container) isUnhealthy() (bool, error) {
 	if !c.HasHealthCheck() {
 		return false, nil
@@ -363,9 +376,16 @@ func (c *Container) isUnhealthy() (bool, error) {
 }
 
 // UpdateHealthCheckLog parses the health check results and writes the log
-func (c *Container) updateHealthCheckLog(hcl define.HealthCheckLog, inStartPeriod bool) (string, error) {
+func (c *Container) updateHealthCheckLog(hcl define.HealthCheckLog, inStartPeriod, isStartup bool) (string, error) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
+
+	// If we are playing a kube yaml then let's honor the start period time for
+	// both failing and succeeding cases to match kube behavior.
+	// So don't update the health check log till the start period is over
+	if _, ok := c.config.Spec.Annotations[define.KubeHealthCheckAnnotation]; ok && inStartPeriod && !isStartup {
+		return "", nil
+	}
 
 	healthCheck, err := c.getHealthCheckLog()
 	if err != nil {
@@ -410,11 +430,12 @@ func (c *Container) healthCheckLogPath() string {
 // The caller should lock the container before this function is called.
 func (c *Container) getHealthCheckLog() (define.HealthCheckResults, error) {
 	var healthCheck define.HealthCheckResults
-	if _, err := os.Stat(c.healthCheckLogPath()); os.IsNotExist(err) {
-		return healthCheck, nil
-	}
 	b, err := os.ReadFile(c.healthCheckLogPath())
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			// If the file does not exists just return empty healthcheck and no error.
+			return healthCheck, nil
+		}
 		return healthCheck, fmt.Errorf("failed to read health check log file: %w", err)
 	}
 	if err := json.Unmarshal(b, &healthCheck); err != nil {

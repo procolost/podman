@@ -12,6 +12,7 @@ import (
 	graphdriver "github.com/containers/storage/drivers"
 	"github.com/containers/storage/pkg/devicemapper"
 	"github.com/containers/storage/pkg/directory"
+	"github.com/containers/storage/pkg/fileutils"
 	"github.com/containers/storage/pkg/idtools"
 	"github.com/containers/storage/pkg/locker"
 	"github.com/containers/storage/pkg/mount"
@@ -20,7 +21,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const defaultPerms = os.FileMode(0555)
+const defaultPerms = os.FileMode(0o555)
 
 func init() {
 	graphdriver.MustRegister("devicemapper", Init)
@@ -55,7 +56,6 @@ func Init(home string, options graphdriver.Options) (graphdriver.Driver, error) 
 		ctr:       graphdriver.NewRefCounter(graphdriver.NewDefaultChecker()),
 		locker:    locker.New(),
 	}
-
 	return graphdriver.NewNaiveDiffDriver(d, graphdriver.NewNaiveLayerIDMapUpdater(d)), nil
 }
 
@@ -103,7 +103,6 @@ func (d *Driver) Status() [][2]string {
 // Metadata returns a map of information about the device.
 func (d *Driver) Metadata(id string) (map[string]string, error) {
 	m, err := d.DeviceSet.exportDeviceMetadata(id)
-
 	if err != nil {
 		return nil, err
 	}
@@ -202,11 +201,11 @@ func (d *Driver) Get(id string, options graphdriver.MountOpts) (string, error) {
 	}
 
 	// Create the target directories if they don't exist
-	if err := idtools.MkdirAllAs(path.Join(d.home, "mnt"), 0755, uid, gid); err != nil {
+	if err := idtools.MkdirAllAs(path.Join(d.home, "mnt"), 0o755, uid, gid); err != nil {
 		d.ctr.Decrement(mp)
 		return "", err
 	}
-	if err := idtools.MkdirAs(mp, 0755, uid, gid); err != nil && !os.IsExist(err) {
+	if err := idtools.MkdirAs(mp, 0o755, uid, gid); err != nil && !os.IsExist(err) {
 		d.ctr.Decrement(mp)
 		return "", err
 	}
@@ -224,10 +223,10 @@ func (d *Driver) Get(id string, options graphdriver.MountOpts) (string, error) {
 	}
 
 	idFile := path.Join(mp, "id")
-	if _, err := os.Stat(idFile); err != nil && os.IsNotExist(err) {
+	if err := fileutils.Exists(idFile); err != nil && os.IsNotExist(err) {
 		// Create an "id" file with the container/image id in it to help reconstruct this in case
 		// of later problems
-		if err := os.WriteFile(idFile, []byte(id), 0600); err != nil {
+		if err := os.WriteFile(idFile, []byte(id), 0o600); err != nil {
 			d.ctr.Decrement(mp)
 			d.DeviceSet.UnmountDevice(id, mp)
 			return "", err
@@ -265,11 +264,6 @@ func (d *Driver) ReadWriteDiskUsage(id string) (*directory.DiskUsage, error) {
 // Exists checks to see if the device exists.
 func (d *Driver) Exists(id string) bool {
 	return d.DeviceSet.HasDevice(id)
-}
-
-// List layers (not including additional image stores)
-func (d *Driver) ListLayers() ([]string, error) {
-	return nil, graphdriver.ErrNotSupported
 }
 
 // AdditionalImageStores returns additional image stores supported by the driver

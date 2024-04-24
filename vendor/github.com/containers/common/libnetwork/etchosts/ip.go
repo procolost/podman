@@ -10,9 +10,16 @@ import (
 	"github.com/containers/storage/pkg/unshare"
 )
 
-// GetHostContainersInternalIP return the host.containers.internal ip
+// GetHostContainersInternalIP returns the host.containers.internal ip
 // if netStatus is not nil then networkInterface also must be non nil otherwise this function panics
 func GetHostContainersInternalIP(conf *config.Config, netStatus map[string]types.StatusBlock, networkInterface types.ContainerNetwork) string {
+	return GetHostContainersInternalIPExcluding(conf, netStatus, networkInterface, nil)
+}
+
+// GetHostContainersInternalIPExcluding returns the host.containers.internal ip
+// Exclude are ips that should not be returned, this is useful to prevent returning the same ip as in the container.
+// if netStatus is not nil then networkInterface also must be non nil otherwise this function panics
+func GetHostContainersInternalIPExcluding(conf *config.Config, netStatus map[string]types.StatusBlock, networkInterface types.ContainerNetwork, exclude []net.IP) string {
 	switch conf.Containers.HostContainersInternalIP {
 	case "":
 		// if empty (default) we will automatically choose one below
@@ -29,7 +36,7 @@ func GetHostContainersInternalIP(conf *config.Config, netStatus map[string]types
 	// Only use the bridge ip when root, as rootless the interfaces are created
 	// inside the special netns and not the host so we cannot use them.
 	if unshare.IsRootless() {
-		return getLocalIP()
+		return util.GetLocalIPExcluding(exclude)
 	}
 	for net, status := range netStatus {
 		network, err := networkInterface.NetworkInspect(net)
@@ -53,27 +60,7 @@ func GetHostContainersInternalIP(conf *config.Config, netStatus map[string]types
 	if ip != "" {
 		return ip
 	}
-	return getLocalIP()
-}
-
-// getLocalIP returns the non loopback local IP of the host
-func getLocalIP() string {
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return ""
-	}
-	ip := ""
-	for _, address := range addrs {
-		// check the address type and if it is not a loopback the display it
-		if ipnet, ok := address.(*net.IPNet); ok && ipnet.IP.IsGlobalUnicast() {
-			if util.IsIPv4(ipnet.IP) {
-				return ipnet.IP.String()
-			}
-			// if ipv6 we keep looking for an ipv4 address
-			ip = ipnet.IP.String()
-		}
-	}
-	return ip
+	return util.GetLocalIPExcluding(exclude)
 }
 
 // GetNetworkHostEntries returns HostEntries for all ips in the network status

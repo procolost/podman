@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,6 +30,7 @@ import (
 	"github.com/containers/image/v5/manifest"
 	"github.com/containers/image/v5/types"
 	"github.com/containers/storage/pkg/archive"
+	"github.com/containers/storage/pkg/fileutils"
 	"github.com/klauspost/pgzip"
 	"github.com/opencontainers/go-digest"
 	selinux "github.com/opencontainers/selinux/go-selinux"
@@ -335,6 +337,9 @@ func (d *ostreeImageDestination) importConfig(repo *otbuiltin.Repo, blob *blobTo
 // reflected in the manifest that will be written.
 // If the transport can not reuse the requested blob, TryReusingBlob returns (false, {}, nil); it returns a non-nil error only on an unexpected failure.
 func (d *ostreeImageDestination) TryReusingBlobWithOptions(ctx context.Context, info types.BlobInfo, options private.TryReusingBlobOptions) (bool, private.ReusedBlob, error) {
+	if !impl.OriginalCandidateMatchesTryReusingBlobOptions(options) {
+		return false, private.ReusedBlob{}, nil
+	}
 	if d.repo == nil {
 		repo, err := openRepo(d.ref.repo)
 		if err != nil {
@@ -501,7 +506,7 @@ func (d *ostreeImageDestination) Commit(context.Context, types.UnparsedImage) er
 }
 
 func ensureDirectoryExists(path string) error {
-	if _, err := os.Stat(path); err != nil && os.IsNotExist(err) {
+	if err := fileutils.Exists(path); err != nil && errors.Is(err, fs.ErrNotExist) {
 		if err := os.MkdirAll(path, 0755); err != nil {
 			return err
 		}

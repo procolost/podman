@@ -72,7 +72,7 @@ load helpers
     # the window for race conditions that led to #9479.
     run_podman run --rm -d $IMAGE sleep infinity
     local cid="$output"
-    run_podman rm -af
+    run_podman rm -af -t0
 
     # Check the OCI runtime directory has removed.
     is "$(ls $OCIDir | grep $cid)" "" "The OCI runtime directory should have been removed"
@@ -111,6 +111,13 @@ load helpers
     is "$output" "Error: no container with ID or name \"bogus\" found: no such container" "Should print error"
     run_podman container rm --force bogus
     is "$output" "" "Should print no output"
+
+    run_podman create --name test $IMAGE
+    run_podman container rm --force bogus test
+    assert "$output" = "test" "should delete test"
+
+    run_podman ps -a -q
+    assert "$output" = "" "container should be removed"
 }
 
 function __run_healthcheck_container() {

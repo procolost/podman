@@ -1,5 +1,4 @@
 //go:build freebsd && cgo
-// +build freebsd,cgo
 
 package rootless
 
@@ -56,11 +55,6 @@ func ConfigurationMatches() (bool, error) {
 // GetConfiguredMappings returns the additional IDs configured for the current user.
 func GetConfiguredMappings(quiet bool) ([]idtools.IDMap, []idtools.IDMap, error) {
 	return nil, nil, errors.New("this function is not supported on this os")
-}
-
-// ReadMappingsProc returns the uid_map and gid_map
-func ReadMappingsProc(path string) ([]idtools.IDMap, error) {
-	return nil, nil
 }
 
 // IsFdInherited checks whether the fd is opened and valid to use

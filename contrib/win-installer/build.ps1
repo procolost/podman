@@ -12,8 +12,9 @@ function FetchPanel() {
     $ProgressPreference = 'SilentlyContinue'
     Invoke-WebRequest -UseBasicParsing -OutFile nuget.exe -ErrorAction Stop `
         -Uri https://dist.nuget.org/win-x86-commandline/latest/nuget.exe
-
-    .\nuget.exe install PanelSwWixExtension
+    # 3.3.3.224 generates invalid schema with RemoveFeature defaults.
+    # Lock the version to 211 until this issue is fixed (7/18/2023)
+    .\nuget.exe install PanelSwWixExtension -Version 3.3.3.211
     $code = $LASTEXITCODE
     Pop-Location
     if ($code -gt 0) {
@@ -98,7 +99,7 @@ if ($args.Count -lt 1 -or $args[0].Length -lt 1) {
 }
 
 # Pre-set to standard locations in-case build env does not refresh paths
-$Env:Path="$Env:Path;C:\Program Files (x86)\WiX Toolset v3.11\bin;C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin;;C:\Program Files\Go\bin"
+$Env:Path="$Env:Path;C:\Program Files (x86)\WiX Toolset v3.14\bin;C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin;;C:\Program Files\Go\bin"
 
 CheckRequirements
 
@@ -138,10 +139,18 @@ SignItem @("artifacts/win-sshproxy.exe",
 $gvExists = Test-Path "artifacts/gvproxy.exe"
 if ($gvExists) {
     SignItem @("artifacts/gvproxy.exe")
+    Remove-Item Env:\UseGVProxy -ErrorAction SilentlyContinue
 } else {
     $env:UseGVProxy = "Skip"
 }
 
+# Retaining for possible future additions
+# $pExists = Test-Path "artifacts/policy.json"
+# if ($pExists) {
+#     Remove-Item Env:\IncludePolicyJSON -ErrorAction SilentlyContinue
+# } else {
+#     $env:IncludePolicyJSON = "Skip"
+# }
 .\build-msi.bat $ENV:INSTVER; ExitOnError
 SignItem @("podman.msi")
 

@@ -1,3 +1,5 @@
+//go:build !remote
+
 package ps
 
 import (
@@ -12,11 +14,11 @@ import (
 	"time"
 
 	libnetworkTypes "github.com/containers/common/libnetwork/types"
-	"github.com/containers/podman/v4/libpod"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/domain/filters"
-	psdefine "github.com/containers/podman/v4/pkg/ps/define"
+	"github.com/containers/podman/v5/libpod"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/domain/filters"
+	psdefine "github.com/containers/podman/v5/pkg/ps/define"
 	"github.com/containers/storage"
 	"github.com/containers/storage/types"
 	"github.com/sirupsen/logrus"
@@ -145,6 +147,7 @@ func ListContainerBatch(rt *libpod.Runtime, ctr *libpod.Container, opts entities
 		portMappings                            []libnetworkTypes.PortMapping
 		networks                                []string
 		healthStatus                            string
+		restartCount                            uint
 	)
 
 	batchErr := ctr.Batch(func(c *libpod.Container) error {
@@ -193,6 +196,11 @@ func ListContainerBatch(rt *libpod.Runtime, ctr *libpod.Container, opts entities
 			return err
 		}
 
+		restartCount, err = c.RestartCount()
+		if err != nil {
+			return err
+		}
+
 		if !opts.Size && !opts.Namespace {
 			return nil
 		}
@@ -230,27 +238,30 @@ func ListContainerBatch(rt *libpod.Runtime, ctr *libpod.Container, opts entities
 	}
 
 	ps := entities.ListContainer{
-		AutoRemove: ctr.AutoRemove(),
-		Command:    conConfig.Command,
-		Created:    conConfig.CreatedTime,
-		Exited:     exited,
-		ExitCode:   exitCode,
-		ExitedAt:   exitedTime.Unix(),
-		ID:         conConfig.ID,
-		Image:      conConfig.RootfsImageName,
-		ImageID:    conConfig.RootfsImageID,
-		IsInfra:    conConfig.IsInfra,
-		Labels:     conConfig.Labels,
-		Mounts:     ctr.UserVolumes(),
-		Names:      []string{conConfig.Name},
-		Networks:   networks,
-		Pid:        pid,
-		Pod:        conConfig.Pod,
-		Ports:      portMappings,
-		Size:       size,
-		StartedAt:  startedTime.Unix(),
-		State:      conState.String(),
-		Status:     healthStatus,
+		AutoRemove:   ctr.AutoRemove(),
+		CIDFile:      conConfig.Spec.Annotations[define.InspectAnnotationCIDFile],
+		Command:      conConfig.Command,
+		Created:      conConfig.CreatedTime,
+		ExitCode:     exitCode,
+		Exited:       exited,
+		ExitedAt:     exitedTime.Unix(),
+		ExposedPorts: conConfig.ExposedPorts,
+		ID:           conConfig.ID,
+		Image:        conConfig.RootfsImageName,
+		ImageID:      conConfig.RootfsImageID,
+		IsInfra:      conConfig.IsInfra,
+		Labels:       conConfig.Labels,
+		Mounts:       ctr.UserVolumes(),
+		Names:        []string{conConfig.Name},
+		Networks:     networks,
+		Pid:          pid,
+		Pod:          conConfig.Pod,
+		Ports:        portMappings,
+		Restarts:     restartCount,
+		Size:         size,
+		StartedAt:    startedTime.Unix(),
+		State:        conState.String(),
+		Status:       healthStatus,
 	}
 	if opts.Pod && len(conConfig.Pod) > 0 {
 		podName, err := rt.GetPodName(conConfig.Pod)

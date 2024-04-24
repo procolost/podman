@@ -3,18 +3,13 @@ package integration
 import (
 	"os"
 
-	. "github.com/containers/podman/v4/test/utils"
-	. "github.com/onsi/ginkgo"
+	. "github.com/containers/podman/v5/test/utils"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	. "github.com/onsi/gomega/gexec"
 )
 
 var _ = Describe("Podman unshare", func() {
-	var (
-		tempdir    string
-		err        error
-		podmanTest *PodmanTestIntegration
-	)
 	BeforeEach(func() {
 		if _, err := os.Stat("/proc/self/uid_map"); err != nil {
 			Skip("User namespaces not supported.")
@@ -23,21 +18,6 @@ var _ = Describe("Podman unshare", func() {
 		if !isRootless() {
 			Skip("Use unshare in rootless only")
 		}
-
-		tempdir, err = CreateTempDirInTempDir()
-		if err != nil {
-			os.Exit(1)
-		}
-		podmanTest = PodmanTestCreate(tempdir)
-		podmanTest.CgroupManager = "cgroupfs"
-		podmanTest.StorageOptions = ROOTLESS_STORAGE_OPTIONS
-		podmanTest.Setup()
-	})
-
-	AfterEach(func() {
-		podmanTest.Cleanup()
-		f := CurrentGinkgoTestDescription()
-		processTestResult(f)
 	})
 
 	It("podman unshare", func() {
@@ -45,16 +25,8 @@ var _ = Describe("Podman unshare", func() {
 		userNS, _ := os.Readlink("/proc/self/ns/user")
 		session := podmanTest.Podman([]string{"unshare", "readlink", "/proc/self/ns/user"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		Expect(session.OutputToString()).ToNot(ContainSubstring(userNS))
-	})
-
-	It("podman unshare --rootless-cni", func() {
-		SkipIfRemote("podman-remote unshare is not supported")
-		session := podmanTest.Podman([]string{"unshare", "--rootless-netns", "ip", "addr"})
-		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
-		Expect(session.OutputToString()).To(ContainSubstring("tap0"))
 	})
 
 	It("podman unshare exit codes", func() {

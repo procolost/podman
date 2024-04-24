@@ -14,8 +14,11 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
+	bdefine "github.com/containers/buildah/define"
 	"github.com/containers/common/libimage"
+	"github.com/containers/common/libimage/filter"
 	"github.com/containers/common/pkg/config"
 	"github.com/containers/common/pkg/ssh"
 	"github.com/containers/image/v5/docker"
@@ -25,17 +28,19 @@ import (
 	"github.com/containers/image/v5/signature"
 	"github.com/containers/image/v5/transports"
 	"github.com/containers/image/v5/transports/alltransports"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/domain/entities/reports"
-	domainUtils "github.com/containers/podman/v4/pkg/domain/utils"
-	"github.com/containers/podman/v4/pkg/errorhandling"
-	"github.com/containers/podman/v4/pkg/rootless"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/domain/entities/reports"
+	domainUtils "github.com/containers/podman/v5/pkg/domain/utils"
+	"github.com/containers/podman/v5/pkg/errorhandling"
+	"github.com/containers/podman/v5/pkg/rootless"
 	"github.com/containers/storage"
 	"github.com/opencontainers/go-digest"
 	imgspecv1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/sirupsen/logrus"
 )
+
+const UnknownDigestSuffix = docker.UnknownDigestSuffix
 
 func (ir *ImageEngine) Exists(_ context.Context, nameOrID string) (*entities.BoolReport, error) {
 	exists, err := ir.Libpod.LibimageRuntime().Exists(nameOrID)
@@ -55,7 +60,18 @@ func (ir *ImageEngine) Prune(ctx context.Context, opts entities.ImagePruneOption
 	}
 
 	if !opts.All {
-		pruneOptions.Filters = append(pruneOptions.Filters, "dangling=true")
+		// Issue #20469: Docker clients handle the --all flag on the
+		// client side by setting the dangling filter directly.
+		alreadySet := false
+		for _, filter := range pruneOptions.Filters {
+			if strings.HasPrefix(filter, "dangling=") {
+				alreadySet = true
+				break
+			}
+		}
+		if !alreadySet {
+			pruneOptions.Filters = append(pruneOptions.Filters, "dangling=true")
+		}
 	}
 	if opts.External {
 		pruneOptions.Filters = append(pruneOptions.Filters, "containers=external")
@@ -92,15 +108,16 @@ func (ir *ImageEngine) Prune(ctx context.Context, opts entities.ImagePruneOption
 }
 
 func toDomainHistoryLayer(layer *libimage.ImageHistory) entities.ImageHistoryLayer {
-	l := entities.ImageHistoryLayer{}
-	l.ID = layer.ID
+	l := entities.ImageHistoryLayer{
+		Comment:   layer.Comment,
+		CreatedBy: layer.CreatedBy,
+		ID:        layer.ID,
+		Size:      layer.Size,
+		Tags:      layer.Tags,
+	}
 	if layer.Created != nil {
 		l.Created = *layer.Created
 	}
-	l.CreatedBy = layer.CreatedBy
-	copy(l.Tags, layer.Tags)
-	l.Size = layer.Size
-	l.Comment = layer.Comment
 	return l
 }
 
@@ -237,6 +254,15 @@ func (ir *ImageEngine) Pull(ctx context.Context, rawImage string, options entiti
 	pullOptions.InsecureSkipTLSVerify = options.SkipTLSVerify
 	pullOptions.Writer = options.Writer
 	pullOptions.OciDecryptConfig = options.OciDecryptConfig
+	pullOptions.MaxRetries = options.Retry
+
+	if options.RetryDelay != "" {
+		duration, err := time.ParseDuration(options.RetryDelay)
+		if err != nil {
+			return nil, err
+		}
+		pullOptions.RetryDelay = &duration
+	}
 
 	if !options.Quiet && pullOptions.Writer == nil {
 		pullOptions.Writer = os.Stderr
@@ -315,6 +341,16 @@ func (ir *ImageEngine) Push(ctx context.Context, source string, destination stri
 	pushOptions.Writer = options.Writer
 	pushOptions.OciEncryptConfig = options.OciEncryptConfig
 	pushOptions.OciEncryptLayers = options.OciEncryptLayers
+	pushOptions.CompressionLevel = options.CompressionLevel
+	pushOptions.ForceCompressionFormat = options.ForceCompressionFormat
+	pushOptions.MaxRetries = options.Retry
+	if options.RetryDelay != "" {
+		duration, err := time.ParseDuration(options.RetryDelay)
+		if err != nil {
+			return nil, err
+		}
+		pushOptions.RetryDelay = &duration
+	}
 
 	compressionFormat := options.CompressionFormat
 	if compressionFormat == "" {
@@ -330,6 +366,14 @@ func (ir *ImageEngine) Push(ctx context.Context, source string, destination stri
 			return nil, err
 		}
 		pushOptions.CompressionFormat = &algo
+	}
+
+	if pushOptions.CompressionLevel == nil {
+		config, err := ir.Libpod.GetConfigNoCopy()
+		if err != nil {
+			return nil, err
+		}
+		pushOptions.CompressionLevel = config.Engine.CompressionLevel
 	}
 
 	if !options.Quiet && pushOptions.Writer == nil {
@@ -451,7 +495,7 @@ func (ir *ImageEngine) Import(ctx context.Context, options entities.ImageImportO
 
 // Search for images using term and filters
 func (ir *ImageEngine) Search(ctx context.Context, term string, opts entities.ImageSearchOptions) ([]entities.ImageSearchReport, error) {
-	filter, err := libimage.ParseSearchFilter(opts.Filters)
+	filter, err := filter.ParseSearchFilter(opts.Filters)
 	if err != nil {
 		return nil, err
 	}
@@ -501,7 +545,11 @@ func (ir *ImageEngine) Build(ctx context.Context, containerFiles []string, opts 
 	if err != nil {
 		return nil, err
 	}
-	return &entities.BuildReport{ID: id}, nil
+	saveFormat := define.OCIArchive
+	if opts.OutputFormat == bdefine.Dockerv2ImageManifest {
+		saveFormat = define.V2s2Archive
+	}
+	return &entities.BuildReport{ID: id, SaveFormat: saveFormat}, nil
 }
 
 func (ir *ImageEngine) Tree(ctx context.Context, nameOrID string, opts entities.ImageTreeOptions) (*entities.ImageTreeReport, error) {
@@ -817,7 +865,7 @@ func transferRootful(source entities.ImageScpOptions, dest entities.ImageScpOpti
 	if err != nil {
 		return err
 	}
-	out, err := execTransferPodman(uLoad, loadCommand, (len(dest.Tag) > 0))
+	out, err := execTransferPodman(uLoad, loadCommand, len(dest.Tag) > 0)
 	if err != nil {
 		return err
 	}

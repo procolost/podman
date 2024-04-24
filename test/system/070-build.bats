@@ -6,6 +6,7 @@
 
 load helpers
 
+# bats test_tags=distro-integration
 @test "podman build - basic test" {
     rand_filename=$(random_string 20)
     rand_content=$(random_string 50)
@@ -23,6 +24,10 @@ EOF
     PODMAN_TIMEOUT=240 run_podman build -t build_test --format=docker $tmpdir
     is "$output" ".*COMMIT" "COMMIT seen in log"
 
+    # $IMAGE is preloaded, so we should never re-pull
+    assert "$output" !~ "Trying to pull" "Default pull policy should be 'missing'"
+    assert "$output" !~ "Writing manifest" "Default pull policy should be 'missing'"
+
     run_podman run --rm build_test cat /$rand_filename
     is "$output"   "$rand_content"   "reading generated file in image"
 
@@ -30,11 +35,6 @@ EOF
 }
 
 @test "podman buildx - basic test" {
-    run_podman info --format "{{.Store.GraphDriverName}}"
-    if [[ "$output" == "vfs" ]]; then
-        skip "Test not supported with VFS podman storage driver (#17520)"
-    fi
-
     rand_filename=$(random_string 20)
     rand_content=$(random_string 50)
 
@@ -77,9 +77,14 @@ EOF
     assert "${lines[0]}" = "${lines[5]}" "devnum( / ) = devnum( /[etc )"
     assert "${lines[0]}" = "${lines[7]}" "devnum( / ) = devnum( /etc )"
     assert "${lines[6]}" = "${lines[8]}" "devnum( /[etc/foo, ) = devnum( /etc/bar] )"
-    # ...then, each volume should be different
-    assert "${lines[0]}" != "${lines[3]}" "devnum( / ) != devnum( volume0 )"
-    assert "${lines[0]}" != "${lines[6]}" "devnum( / ) != devnum( volume1 )"
+    # ...then, check volumes; these differ between overlay and vfs.
+    # Under Overlay (usual case), these will be different. On VFS, they're the same.
+    local op="!="
+    if [[ "$(podman_storage_driver)" == "vfs" ]]; then
+        op="="
+    fi
+    assert "${lines[0]}" $op "${lines[3]}" "devnum( / ) $op devnum( volume0 )"
+    assert "${lines[0]}" $op "${lines[6]}" "devnum( / ) $op devnum( volume1 )"
 
     # FIXME: is this expected? I thought /a/b/c and /[etc/foo, would differ
     assert "${lines[3]}" = "${lines[6]}" "devnum( volume0 ) = devnum( volume1 )"
@@ -219,8 +224,11 @@ FROM $IMAGE
 RUN echo $rand_content > /$rand_filename
 EOF
 
+    # "TMPDIR=relative-path" tests buildah PR #5084. Prior to that, podman failed in RUN:
+    #   error running container: checking permissions on "sub-tmp-dir/buildah2917655141": ENOENT
     cd $PODMAN_TMPDIR
-    run_podman build -t build_test -f ./reldir/Containerfile --format=docker $tmpdir
+    mkdir sub-tmp-dir
+    TMPDIR=sub-tmp-dir run_podman build -t build_test -f ./reldir/Containerfile --format=docker $tmpdir
     is "$output" ".*COMMIT" "COMMIT seen in log"
 
     run_podman run --rm build_test cat /$rand_filename
@@ -241,12 +249,19 @@ EOF
     local count=30
     for i in $(seq --format '%02g' 1 $count); do
         timeout --foreground -v --kill=10 60 \
-                $PODMAN build -t i$i $PODMAN_TMPDIR &>/dev/null &
+                $PODMAN build -t i$i $PODMAN_TMPDIR &> $PODMAN_TMPDIR/log.$i &
     done
 
     # Wait for all background builds to complete. Note that this succeeds
     # even if some of the individual builds fail! Our actual test is below.
     wait
+
+    # For debugging, e.g., #21742
+    for log in $PODMAN_TMPDIR/log.*;do
+        echo
+        echo $log ":"
+        cat $log
+    done
 
     # Now delete all built images. If any image wasn't built, rmi will fail
     # and test will fail.
@@ -272,6 +287,7 @@ EOF
 }
 
 
+# bats test_tags=distro-integration
 @test "podman build - workdir, cmd, env, label" {
     tmpdir=$PODMAN_TMPDIR/build-test
     mkdir -p $tmpdir
@@ -660,9 +676,27 @@ EOF
     mv $tmpdir/Dockerfile $tmpdir/foofile
 
     run_podman 125 build -t build_test $tmpdir
-    is "$output" ".*Dockerfile: no such file or directory"
-
+    is "$output" "Error: no Containerfile or Dockerfile specified or found in context directory, $tmpdir: no such file or directory"
     run_podman build -t build_test -f $tmpdir/foofile $tmpdir
+
+    # Clean up
+    run_podman rmi -f build_test
+}
+
+# Regression test for #20259
+@test "podman build with ignore '*' and containerfile outside of build context" {
+    local tmpdir=$PODMAN_TMPDIR/build-test-$(random_string 10)
+    mkdir -p $tmpdir
+    mkdir -p $tmpdir/context
+
+    cat >$tmpdir/Containerfile <<EOF
+FROM scratch
+EOF
+
+    cat >$tmpdir/context/.containerignore <<EOF
+*
+EOF
+    run_podman build -t build_test -f $tmpdir/Containerfile $tmpdir/context
 
     # Clean up
     run_podman rmi -f build_test
@@ -730,7 +764,7 @@ EOF
     if is_remote; then remote_extra=".*";fi
     expect="${random1}
 .*
-STEP 1/2: FROM $IMAGE
+\[[0-9:.]\+\] STEP 1/2: FROM $IMAGE
 STEP 2/2: RUN echo x${random2}y
 x${random2}y${remote_extra}
 COMMIT build_test${remote_extra}
@@ -1097,6 +1131,24 @@ EOF
     run_podman run -d --name test_ctr build_test  top
     run_podman run --rm --volumes-from test_ctr $IMAGE  echo $rand_content
     is "$output"   "$rand_content"   "No error should be thrown about volume in use"
+
+    run_podman rmi -f build_test
+}
+
+@test "podman build empty context dir" {
+    buildcontextdir=$PODMAN_TMPDIR/emptydir
+    mkdir -p $buildcontextdir
+    containerfile=$PODMAN_TMPDIR/Containerfile
+    echo FROM scratch >$containerfile
+
+    run_podman build -t build_test -f $containerfile $buildcontextdir
+    assert "$output" !~ "EOF" "output should not contain EOF error"
+
+    run_podman rmi -f build_test
+}
+
+@test "podman build --file=https" {
+    run_podman build -t build_test --file=https://raw.githubusercontent.com/containers/podman/main/test/build/from-scratch/Dockerfile $PODMAN_TMPDIR
 
     run_podman rmi -f build_test
 }
